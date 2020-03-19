@@ -46,7 +46,7 @@ static size_t bytes_freed = 0;
 static size_t blocks_allocated = 0;
 static size_t blocks_freed = 0;
 
-
+/**Returns base of the address specified by offset*/
 cell*
 o2p(u16 off)
 {
@@ -168,6 +168,8 @@ gc_init(void* main_frame)
     base_cell->size = CELL_COUNT - 1;
     base_cell->next = 0;
 
+    //printf("chunk base is %p, first cell: %p\n", chunk_base, base_cell);
+
     free_list = 1;
 }
 
@@ -222,7 +224,11 @@ gc_malloc1(size_t bytes)
 
     u16* pptr = &free_list;
     for (cell* cc = o2p(free_list); cc; pptr = &(cc->next), cc = o2p(*pptr)) {
+        if(blocks_allocated >= 253) {
+            //printf("blck allocated %d\n", blocks_allocated);
+        }
         if (units <= cc->size) {
+            
             // TODO: Split cells when appropriate.
             //
             // This currently just allocates the whole heap to the first
@@ -234,19 +240,37 @@ gc_malloc1(size_t bytes)
             // else {
             //   this is doing the right thing for this case
             // }
+            cell *dd;
 
-            cell* dd = 0;
-            *pptr = cc->next;
             dd = cc;
+            cc = (void *) ((void*)cc + units * ALLOC_UNIT);
+            cc->size = dd->size - units;
+            cc->conf = 7*cc->size;
+            
 
-            dd->conf = 7*dd->size;
+            /**
+            if(units < cc->size) {
+                cc->conf = 7 * cc->size;
+            } else {
+                cc->conf = 7 * cc->size;
+            }
+            */
+
+            *pptr = cc->next;
+            
+            dd->size = units;
+            dd->conf = 7 * dd->size;
+
             insert_used(dd);
 
-            void* addr = (void*)(dd + 1);
+            void* addr = (void*)((char*) dd + sizeof(cell));
+            u16 *free_listPtr = &free_list;
+            *free_listPtr = p2o(cc);
             memset(addr, 0x7F, bytes);
 
             assert(dd->size == units);
             assert(dd->conf == 7*dd->size);
+            //printf("remaining amount : %d, freep : %d bytes: %d\n", (cc->size), free_list, bytes);
 
             //check_list(used_list);
             return addr;
