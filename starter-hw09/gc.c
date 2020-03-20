@@ -34,6 +34,8 @@ typedef struct cell {
 static u16 free_list = 0;
 static u16 used_list = 0;
 
+static long totalrounded = 0;
+
 // the bottom of the 1MB garbage collected heap
 static void* chunk_base = 0;
 
@@ -135,7 +137,76 @@ u16
 insert_free(u16 coff, cell* item)
 {
     assert(item != 0);
+    item->next = 0;
+    intptr_t itemAddrSt, itemAddrEnd;
+    itemAddrSt = (intptr_t) item;               //Start address of cell
+    itemAddrEnd = (intptr_t) (((char*) item) + (item->size * ALLOC_UNIT )); //End address of cell
 
+    cell *curCell;
+    intptr_t curCellAddrSt, curCellAddrEnd;
+    
+    u16 index, prevIndex = 0;
+
+    if(free_list == 0) {
+        free_list = p2o(item);
+        item->next = 0;
+        return 0;
+    }
+
+    for(index = free_list;      ; prevIndex = index, index = curCell->next) {
+        curCellAddrSt = 0;
+        curCellAddrEnd = 0;
+        curCell = 0;
+        if(index > 0) {
+            curCell = o2p(index);
+            curCellAddrSt = (intptr_t) curCell;
+            curCellAddrEnd = (intptr_t) (((char*) curCell) + (curCell->size * ALLOC_UNIT)); 
+        }
+       
+        //coalesce case
+        if(curCell && itemAddrEnd + 1 == curCellAddrSt) {  //NewItem -m- curCell
+            if(prevIndex == 0) {                //0-> NewItem-m-curCell -> cellNext
+                item->size += curCell->size;
+                item->conf = item->size * 7;
+                item->next = curCell->next;
+                free_list = p2o(item);  //+1?
+            } else {                            //0 -> ...cellPrev -> NewItem-m-curCell -> cellNext
+                item->size += curCell->size;
+                item->conf = item->size * 7;
+                item->next = curCell->next;
+                cell *prevCell;
+                prevCell = o2p(prevIndex);
+                prevCell->next = p2o(item); //+1?
+            }
+            break;
+        }
+        else if(curCell && itemAddrSt - 1 == curCellAddrEnd) { //curcell -m- NewItem
+            if(curCell->next == 0) {               //0 -> prevcell-> curCell-m-NewItem -> 0
+                curCell->size += item->size;
+                curCell->conf = curCell->size * 7;
+            } else {                               //0 -> cellPrev -> curCell-m-NewItem -> cellNext
+                curCell->size += item->size;
+                curCell->conf = curCell->size * 7;
+            }
+            break;
+        }
+        else if(itemAddrSt < curCellAddrSt) {
+            if(prevIndex == 0) { //insert at the beginning
+                item->next = free_list;
+                free_list = p2o(item);
+            } else {             //insert in the middle   
+                cell *prevCell;
+                prevCell = o2p(prevIndex);
+                item->next = prevCell->next;
+                prevCell->next = prevIndex;
+            }
+            break;
+        } else if(itemAddrSt > curCellAddrSt && curCell->next == 0) { //insert at the end
+            curCell->next = p2o(item);
+            item->next = 0;
+            break;
+        }
+    }
     // TODO: insert item into list in
     // sorted order and coalesce if needed
 
@@ -151,6 +222,7 @@ insert_used(cell* item)
     item->used = 1;
     item->next = used_list;
     used_list = ioff;
+    
 }
 
 void
@@ -211,6 +283,7 @@ div_round_up(int num, int den)
     return (num % den == 0) ? quo : quo + 1;
 }
 
+
 static
 void*
 gc_malloc1(size_t bytes)
@@ -218,54 +291,36 @@ gc_malloc1(size_t bytes)
     //check_list(used_list);
 
     u16 units = (u16)div_round_up(bytes + sizeof(cell), ALLOC_UNIT);
+    totalrounded += units * ALLOC_UNIT;
 
     bytes_allocated += units * ALLOC_UNIT;
     blocks_allocated += 1;
 
     u16* pptr = &free_list;
     for (cell* cc = o2p(free_list); cc; pptr = &(cc->next), cc = o2p(*pptr)) {
-        if(blocks_allocated >= 253) {
-            //printf("blck allocated %d\n", blocks_allocated);
+        if(blocks_allocated >= 0) {
+            //printf("blck allocated %ld\n", blocks_allocated);
         }
         if (units <= cc->size) {
-            
-            // TODO: Split cells when appropriate.
-            //
-            // This currently just allocates the whole heap to the first
-            // request.
-            //
-            // if (units < cc->size) {
-            //   do something
-            // }
-            // else {
-            //   this is doing the right thing for this case
-            // }
-            cell *dd;
+ 
+            cell *dd; //keep dd same
+            dd = (void *) cc + (cc->size - units) * ALLOC_UNIT;
 
-            dd = cc;
-            cc = (void *) ((void*)cc + units * ALLOC_UNIT);
-            cc->size = dd->size - units;
-            cc->conf = 7*cc->size;
+            cc->size = cc->size - units;
+            cc->conf = 7 * cc->size;
             
-
-            /**
-            if(units < cc->size) {
-                cc->conf = 7 * cc->size;
-            } else {
-                cc->conf = 7 * cc->size;
+            if(cc->size == 0) {
+                u16 *free_listPtr = &free_list;
+                *free_listPtr = cc->next;
             }
-            */
-
-            *pptr = cc->next;
+            
+            //*pptr = cc->next;
             
             dd->size = units;
             dd->conf = 7 * dd->size;
-
             insert_used(dd);
 
             void* addr = (void*)((char*) dd + sizeof(cell));
-            u16 *free_listPtr = &free_list;
-            *free_listPtr = p2o(cc);
             memset(addr, 0x7F, bytes);
 
             assert(dd->size == units);
@@ -280,6 +335,8 @@ gc_malloc1(size_t bytes)
     return 0;
 }
 
+static long lastAddr = 0;
+
 void*
 gc_malloc(size_t bytes)
 {
@@ -287,9 +344,11 @@ gc_malloc(size_t bytes)
 
     addr = gc_malloc1(bytes);
     if (addr) {
+        lastAddr = (intptr_t) addr;
         return addr;
     }
 
+    printf("retrying\n\n\n");
     // First attempt failed. Run gc and try once more.
     gc_collect();
 
@@ -313,8 +372,23 @@ mark_range(intptr_t bot, intptr_t top)
     intptr_t chunk_bot = (intptr_t)chunk_base;
     intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
 
-    // TODO: Delete this next line.
-    (void) (chunk_bot + chunk_top);
+    //chunk_bot = (void *) chunk_top + chunk_bot;
+
+    long count = stack_top - bot;
+    long index = 0;
+    for (intptr_t ii = bot; ii < stack_top; ii++) {
+        index++;
+        intptr_t heapAddr = (intptr_t) *(intptr_t *) ii;
+        if(heapAddr > chunk_bot && heapAddr < chunk_top) {
+            printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- stack_top: %ld\n", count, lastAddr, index, ii, *(long *  )ii );
+            intptr_t actualAddr = lastAddr - sizeof(cell);
+            cell *actualCell = (cell *) actualAddr;
+            if(actualCell && actualCell->conf == (actualCell->size * 7)) {
+                printf("actualAddr: %ld size: %d used: %d conf: %d\n", actualAddr, actualCell->size, actualCell->used, actualCell->conf);
+                actualCell->mark = 1;
+            }
+        }
+    }
 
     // TODO: scan the region of memory (bot..top) for pointers
     // onto the garbage collected heap. Assume that anything pointing
@@ -339,11 +413,32 @@ sweep()
 {
     // TODO: For each item on the used list, check if it's been
     // marked. If not, free it - probalby by calling insert_free.
+    cell *curCell, *prevCell;
+    u16 currIndex = 0, prevIndex = 0;
+
+    for(prevIndex = 0, currIndex = used_list;  currIndex > 0 ; prevIndex = currIndex, currIndex = curCell->next) {
+        curCell = o2p(currIndex);
+        if(curCell->mark == 1) {
+            curCell->mark = 0;
+        } else {
+            curCell->used = 0;
+            if(prevIndex == 0)
+                used_list = 0;
+            else {
+                prevCell = o2p(prevIndex);
+                prevCell->next = curCell->next;
+            }
+            insert_free(currIndex, curCell);
+        }
+    }
 }
 
 void
 gc_collect()
 {
+    if(0 == 0) {
+        return;
+    }
     mark();
     sweep();
 }
