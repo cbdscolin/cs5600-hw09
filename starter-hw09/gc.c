@@ -133,6 +133,20 @@ gc_print_stats()
     printf("free space: %ld\n", list_total(free_list));
 }
 
+int tryMergeAdjacent(cell *prevCell, cell *curCell) {
+    if(prevCell && curCell) {
+        intptr_t prevAddrEnd = (intptr_t)prevCell + prevCell->size * ALLOC_UNIT;
+        intptr_t curCellSt = (intptr_t)curCell;
+        if(curCellSt == prevAddrEnd) {
+            prevCell->next = curCell->next;
+            prevCell->size += curCell->size;
+            prevCell->conf = prevCell->size * 7;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 u16
 insert_free(u16 coff, cell* item)
 {
@@ -200,13 +214,13 @@ insert_free(u16 coff, cell* item)
         }
         else if(itemAddrSt < curCellAddrSt) {
             if(prevIndex == 0) { //insert at the beginning
-                item->next = free_list;
-                free_list = p2o(item);
+                item->next = index;
+                free_list = coff;
             } else {             //insert in the middle   
                 cell *prevCell;
                 prevCell = o2p(prevIndex);
                 item->next = prevCell->next;
-                prevCell->next = prevIndex;
+                prevCell->next = coff;
             }
             break;
         } else if(itemAddrSt > curCellAddrSt && curCell->next == 0) { //insert at the end
@@ -405,7 +419,10 @@ mark_range(intptr_t bot, intptr_t top)
             if(actualCell && actualCell->conf == (actualCell->size * 7) && actualCell->mark == 0) {
                 //printf("size: %d used: %d conf: %d\n", actualCell->size, actualCell->used, actualCell->conf);
                 actualCell->mark = 1;
+                //printf("mark_range called with %ld, %ld\n", (intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));
                 mark_range((intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));       
+                //printf("mark_range_return called with %ld, %ld\n", (intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));
+
             }
         } 
         if(index >  count) {
@@ -465,8 +482,18 @@ sweep()
             currIndex = newCurIndex;
         }
         
-        
     }
+
+    for (u16 looper = free_list; looper; ) {
+        cell *cCell = 0, *nCell = 0;
+        cCell = o2p(looper);
+        if(cCell) 
+            nCell = o2p(cCell->next);
+//        printf("Cell -  %ld  ---  %ld\n", (intptr_t)cCell, (intptr_t) (cCell) + cCell->size * ALLOC_UNIT );
+        tryMergeAdjacent(cCell, nCell);    
+        looper = cCell->next;
+    }
+//    printf("--End---\n\n");
 }
 
 void
