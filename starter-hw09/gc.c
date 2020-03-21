@@ -34,6 +34,8 @@ typedef struct cell {
 static u16 free_list = 0;
 static u16 used_list = 0;
 
+static long totalrounded = 0;
+
 // the bottom of the 1MB garbage collected heap
 static void* chunk_base = 0;
 
@@ -46,7 +48,7 @@ static size_t bytes_freed = 0;
 static size_t blocks_allocated = 0;
 static size_t blocks_freed = 0;
 
-
+/**Returns base of the address specified by offset*/
 cell*
 o2p(u16 off)
 {
@@ -131,11 +133,102 @@ gc_print_stats()
     printf("free space: %ld\n", list_total(free_list));
 }
 
+int tryMergeAdjacent(cell *prevCell, cell *curCell) {
+    if(prevCell && curCell) {
+        intptr_t prevAddrEnd = (intptr_t)prevCell + prevCell->size * ALLOC_UNIT;
+        intptr_t curCellSt = (intptr_t)curCell;
+        if(curCellSt == prevAddrEnd) {
+            prevCell->next = curCell->next;
+            prevCell->size += curCell->size;
+            prevCell->conf = prevCell->size * 7;
+            return 1;
+        }
+    }
+    return 0;
+}
+
 u16
 insert_free(u16 coff, cell* item)
 {
     assert(item != 0);
+    item->next = 0;
+    intptr_t itemAddrSt, itemAddrEnd;
+    itemAddrSt = (intptr_t) item;               //Start address of cell
+    itemAddrEnd = (intptr_t) (((char*) item) + (item->size * ALLOC_UNIT )); //End address of cell
 
+    cell *curCell;
+    intptr_t curCellAddrSt = 0, curCellAddrEnd = 0;
+    
+    u16 index, prevIndex = 0;
+
+    blocks_freed += 1;
+    bytes_freed += item->size * ALLOC_UNIT;
+
+    if(free_list == 0) {
+        free_list = p2o(item);
+        item->next = 0;
+        return 0;
+    }
+
+    long count = 0;
+    for(index = free_list;      ; prevIndex = index, index = curCell->next) {
+        count++;
+        curCellAddrSt = 0;
+        curCellAddrEnd = 0;
+        curCell = 0;
+        if(count > 1000)
+            break;
+
+        if(index > 0) {
+            curCell = o2p(index);
+            curCellAddrSt = (intptr_t) curCell;
+            curCellAddrEnd = (intptr_t) (((char*) curCell) + (curCell->size * ALLOC_UNIT)); 
+        }
+       
+        //coalesce case
+        if(curCell && itemAddrEnd  == curCellAddrSt) {  //NewItem -m- curCell
+            if(prevIndex == 0) {                //0-> NewItem-m-curCell -> cellNext
+                item->size += curCell->size;
+                item->conf = item->size * 7;
+                item->next = curCell->next;
+                free_list = p2o(item);  //+1?
+            } else {                            //0 -> ...cellPrev -> NewItem-m-curCell -> cellNext
+                item->size += curCell->size;
+                item->conf = item->size * 7;
+                item->next = curCell->next;
+                cell *prevCell;
+                prevCell = o2p(prevIndex);
+                prevCell->next = p2o(item); //+1?
+            }
+            break;
+        }
+        else if(curCell && itemAddrSt == curCellAddrEnd) { //curcell -m- NewItem
+            if(curCell->next == 0) {               //0 -> prevcell-> curCell-m-NewItem -> 0
+                curCell->size += item->size;
+                curCell->conf = curCell->size * 7;
+            } else {                               //0 -> cellPrev -> curCell-m-NewItem -> cellNext
+                curCell->size += item->size;
+                curCell->conf = curCell->size * 7;
+            }
+            break;
+        }
+        else if(itemAddrSt < curCellAddrSt) {
+            if(prevIndex == 0) { //insert at the beginning
+                item->next = index;
+                free_list = coff;
+            } else {             //insert in the middle   
+                cell *prevCell;
+                prevCell = o2p(prevIndex);
+                item->next = prevCell->next;
+                prevCell->next = coff;
+            }
+            break;
+        } else if(itemAddrSt > curCellAddrSt && curCell->next == 0) { //insert at the end
+            curCell->next = p2o(item);
+            item->next = 0;
+            break;
+        }
+    }
     // TODO: insert item into list in
     // sorted order and coalesce if needed
 
@@ -151,6 +244,7 @@ insert_used(cell* item)
     item->used = 1;
     item->next = used_list;
     used_list = ioff;
+    
 }
 
 void
@@ -167,6 +261,8 @@ gc_init(void* main_frame)
     cell* base_cell = (cell*) o2p(1);
     base_cell->size = CELL_COUNT - 1;
     base_cell->next = 0;
+
+    //printf("chunk base is %p, first cell: %p\n", chunk_base, base_cell);
 
     free_list = 1;
 }
@@ -209,6 +305,10 @@ div_round_up(int num, int den)
     return (num % den == 0) ? quo : quo + 1;
 }
 
+static uintptr_t pastPtr = 0;
+static uintptr_t lastAddr = 0;
+
+
 static
 void*
 gc_malloc1(size_t bytes)
@@ -216,45 +316,47 @@ gc_malloc1(size_t bytes)
     //check_list(used_list);
 
     u16 units = (u16)div_round_up(bytes + sizeof(cell), ALLOC_UNIT);
+    totalrounded += units * ALLOC_UNIT;
 
     bytes_allocated += units * ALLOC_UNIT;
     blocks_allocated += 1;
 
     u16* pptr = &free_list;
-    for (cell* cc = o2p(free_list); cc; pptr = &(cc->next), cc = o2p(*pptr)) {
+    for (cell* cc = o2p(free_list); cc; pptr = &(cc->next), cc = o2p(*pptr)) { 
         if (units <= cc->size) {
-            // TODO: Split cells when appropriate.
-            //
-            // This currently just allocates the whole heap to the first
-            // request.
-            //
-            // if (units < cc->size) {
-            //   do something
-            // }
-            // else {
-            //   this is doing the right thing for this case
-            // }
+ 
+            cell *dd; //keep dd same
+            dd = (void *) cc + (cc->size - units) * ALLOC_UNIT;
 
-            cell* dd = 0;
-            *pptr = cc->next;
-            dd = cc;
-
-            dd->conf = 7*dd->size;
+            cc->size = cc->size - units;
+            cc->conf = 7 * cc->size;
+            
+            if(cc->size == 0) {
+                u16 *free_listPtr = &free_list;
+                *free_listPtr = cc->next;
+            }
+            
+            //*pptr = cc->next;
+            
+            dd->size = units;
+            dd->conf = 7 * dd->size;
             insert_used(dd);
 
-            void* addr = (void*)(dd + 1);
+            void* addr = (void*)((char*) dd + sizeof(cell));
+            lastAddr = (intptr_t) addr;
+            pastPtr =  (intptr_t) &addr;
+
             memset(addr, 0x7F, bytes);
 
             assert(dd->size == units);
             assert(dd->conf == 7*dd->size);
-
-            //check_list(used_list);
             return addr;
         }
     }
 
     return 0;
 }
+
 
 void*
 gc_malloc(size_t bytes)
@@ -289,8 +391,19 @@ mark_range(intptr_t bot, intptr_t top)
     intptr_t chunk_bot = (intptr_t)chunk_base;
     intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
 
-    // TODO: Delete this next line.
-    (void) (chunk_bot + chunk_top);
+    for (intptr_t ii = bot; ii <= top; ii++) {
+        intptr_t stackDeRef = *(intptr_t *)ii;
+
+        cell *actualCell = (cell*) ((void*) stackDeRef - sizeof(cell));
+
+        if((intptr_t) actualCell >= chunk_bot && (intptr_t) actualCell <= chunk_top) {
+            if(actualCell && actualCell->conf == (actualCell->size * 7) && actualCell->mark == 0) {
+                actualCell->mark = 1;
+                mark_range((intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));       
+
+            }
+        } 
+    }
 
     // TODO: scan the region of memory (bot..top) for pointers
     // onto the garbage collected heap. Assume that anything pointing
@@ -306,6 +419,7 @@ mark()
 {
     intptr_t stack_bot = 0;
     intptr_t bot = (intptr_t) &stack_bot;
+    stack_top = stack_top - 16;
     mark_range(bot, stack_top);
 }
 
@@ -315,6 +429,39 @@ sweep()
 {
     // TODO: For each item on the used list, check if it's been
     // marked. If not, free it - probalby by calling insert_free.
+    cell *curCell, *prevCell;
+    u16 currIndex = 0, prevIndex = 0;
+
+    for(prevIndex = 0, currIndex = used_list;  currIndex > 0 ; ) {
+        curCell = o2p(currIndex);
+        
+        if(curCell->mark == 1) {
+            curCell->mark = 0;
+            prevIndex = currIndex;
+            currIndex = curCell->next;
+        } else {
+            int newCurIndex = curCell->next;
+            curCell->used = 0;
+            if(prevIndex == 0)
+                used_list = curCell->next;
+            else {
+                prevCell = o2p(prevIndex);
+                prevCell->next = curCell->next;
+            }
+            insert_free(currIndex, curCell);
+            currIndex = newCurIndex;
+        }
+        
+    }
+
+    for (u16 looper = free_list; looper; ) {
+        cell *cCell = 0, *nCell = 0;
+        cCell = o2p(looper);
+        if(cCell) 
+            nCell = o2p(cCell->next);
+        tryMergeAdjacent(cCell, nCell);    
+        looper = cCell->next;
+    }
 }
 
 void
