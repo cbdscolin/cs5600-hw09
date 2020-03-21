@@ -391,8 +391,6 @@ mark_range(intptr_t bot, intptr_t top)
     intptr_t chunk_bot = (intptr_t)chunk_base;
     intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
 
-    long index = 0;
-
     for (intptr_t ii = bot; ii <= top; ii++) {
         intptr_t stackDeRef = *(intptr_t *)ii;
 
