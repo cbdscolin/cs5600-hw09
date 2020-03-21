@@ -350,11 +350,6 @@ gc_malloc1(size_t bytes)
 
             assert(dd->size == units);
             assert(dd->conf == 7*dd->size);
-            //printf("Allocated cell* : %ld, Ch_Address: %ld,  pointer to cell: %ld\n", (intptr_t) dd, (intptr_t) addr, (intptr_t) &dd);
-            //printf("AllocatedChar: %ld, allocchar_addr: %ld ,pastPtr: %ld\n\n", (uintptr_t) addr, (uintptr_t) &addr, (uintptr_t) pastPtr);
-            //printf("remaining amount : %d, freep : %d bytes: %d\n", (cc->size), free_list, bytes);
-
-            //check_list(used_list);
             return addr;
         }
     }
@@ -396,38 +391,20 @@ mark_range(intptr_t bot, intptr_t top)
     intptr_t chunk_bot = (intptr_t)chunk_base;
     intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
 
-   // chunk_top += CHUNK_SIZE;
-
-    //chunk_bot = (void *) chunk_top + chunk_bot;
-
-    long count = stack_top - bot;
     long index = 0;
-    //printf("stack_top: %ld, stack_bottom: %ld, heap_bottom: %ld, heap_top: %ld", top, bot, chunk_bot, chunk_top);
 
     for (intptr_t ii = bot; ii <= top; ii++) {
-        index++;
-        //cell actualAddr = (intptr_t) (* (long* ) ii) - sizeof(cell);
-//        isValidCellPointer(bot, top, ii);
-        //printf("Trying to deref %ld\n", ii);
         intptr_t stackDeRef = *(intptr_t *)ii;
 
         cell *actualCell = (cell*) ((void*) stackDeRef - sizeof(cell));
 
-//      if(0 == 0) {
         if((intptr_t) actualCell >= chunk_bot && (intptr_t) actualCell <= chunk_top) {
-            //printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- heapdata: %ld, pastPtr; %ld\n", count, lastAddr, index, ii, *(long *  )ii , pastPtr);
             if(actualCell && actualCell->conf == (actualCell->size * 7) && actualCell->mark == 0) {
-                //printf("size: %d used: %d conf: %d\n", actualCell->size, actualCell->used, actualCell->conf);
                 actualCell->mark = 1;
-                //printf("mark_range called with %ld, %ld\n", (intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));
                 mark_range((intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));       
-                //printf("mark_range_return called with %ld, %ld\n", (intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));
 
             }
         } 
-        if(index >  count) {
-           // printf("breaking here\n");
-        }
     }
 
     // TODO: scan the region of memory (bot..top) for pointers
@@ -444,8 +421,6 @@ mark()
 {
     intptr_t stack_bot = 0;
     intptr_t bot = (intptr_t) &stack_bot;
-/**    intptr_t pages = bot / 4096 + 1;
-    bot = pages * 4096; */
     mark_range(bot, stack_top);
 }
 
@@ -460,10 +435,6 @@ sweep()
 
     for(prevIndex = 0, currIndex = used_list;  currIndex > 0 ; ) {
         curCell = o2p(currIndex);
-        if(curCell && curCell->mark == 0) {
-            //printf("unmarked %ld\n", (uintptr_t) curCell);
-        }
-        
         
         if(curCell->mark == 1) {
             curCell->mark = 0;
@@ -489,11 +460,9 @@ sweep()
         cCell = o2p(looper);
         if(cCell) 
             nCell = o2p(cCell->next);
-//        printf("Cell -  %ld  ---  %ld\n", (intptr_t)cCell, (intptr_t) (cCell) + cCell->size * ALLOC_UNIT );
         tryMergeAdjacent(cCell, nCell);    
         looper = cCell->next;
     }
-//    printf("--End---\n\n");
 }
 
 void
