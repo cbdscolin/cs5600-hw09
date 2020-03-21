@@ -143,7 +143,7 @@ insert_free(u16 coff, cell* item)
     itemAddrEnd = (intptr_t) (((char*) item) + (item->size * ALLOC_UNIT )); //End address of cell
 
     cell *curCell;
-    intptr_t curCellAddrSt, curCellAddrEnd;
+    intptr_t curCellAddrSt = 0, curCellAddrEnd = 0;
     
     u16 index, prevIndex = 0;
 
@@ -172,7 +172,7 @@ insert_free(u16 coff, cell* item)
         }
        
         //coalesce case
-        if(curCell && itemAddrEnd + 1 == curCellAddrSt) {  //NewItem -m- curCell
+        if(curCell && itemAddrEnd  == curCellAddrSt) {  //NewItem -m- curCell
             if(prevIndex == 0) {                //0-> NewItem-m-curCell -> cellNext
                 item->size += curCell->size;
                 item->conf = item->size * 7;
@@ -188,7 +188,7 @@ insert_free(u16 coff, cell* item)
             }
             break;
         }
-        else if(curCell && itemAddrSt - 1 == curCellAddrEnd) { //curcell -m- NewItem
+        else if(curCell && itemAddrSt == curCellAddrEnd) { //curcell -m- NewItem
             if(curCell->next == 0) {               //0 -> prevcell-> curCell-m-NewItem -> 0
                 curCell->size += item->size;
                 curCell->conf = curCell->size * 7;
@@ -359,7 +359,6 @@ gc_malloc(size_t bytes)
         return addr;
     }
 
-    printf("retrying\n\n\n");
     // First attempt failed. Run gc and try once more.
     gc_collect();
 
