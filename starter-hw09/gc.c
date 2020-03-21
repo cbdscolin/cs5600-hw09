@@ -153,10 +153,13 @@ insert_free(u16 coff, cell* item)
         return 0;
     }
 
+    long count = 0;
     for(index = free_list;      ; prevIndex = index, index = curCell->next) {
+        count++;
         curCellAddrSt = 0;
         curCellAddrEnd = 0;
         curCell = 0;
+
         if(index > 0) {
             curCell = o2p(index);
             curCellAddrSt = (intptr_t) curCell;
@@ -283,6 +286,9 @@ div_round_up(int num, int den)
     return (num % den == 0) ? quo : quo + 1;
 }
 
+static uintptr_t pastPtr = 0;
+static uintptr_t lastAddr = 0;
+
 
 static
 void*
@@ -297,10 +303,7 @@ gc_malloc1(size_t bytes)
     blocks_allocated += 1;
 
     u16* pptr = &free_list;
-    for (cell* cc = o2p(free_list); cc; pptr = &(cc->next), cc = o2p(*pptr)) {
-        if(blocks_allocated >= 0) {
-            //printf("blck allocated %ld\n", blocks_allocated);
-        }
+    for (cell* cc = o2p(free_list); cc; pptr = &(cc->next), cc = o2p(*pptr)) { 
         if (units <= cc->size) {
  
             cell *dd; //keep dd same
@@ -321,10 +324,15 @@ gc_malloc1(size_t bytes)
             insert_used(dd);
 
             void* addr = (void*)((char*) dd + sizeof(cell));
+            lastAddr = (intptr_t) addr;
+            pastPtr =  (intptr_t) &addr;
+
             memset(addr, 0x7F, bytes);
 
             assert(dd->size == units);
             assert(dd->conf == 7*dd->size);
+            //printf("Allocated cell* : %ld, Adress: %ld,  pointer to this cell: %ld\n", (intptr_t) dd, (intptr_t) addr, (intptr_t) &dd);
+            //printf("AllocatedChar: %ld, allocchar_addr: %ld ,pastPtr: %ld\n\n", (uintptr_t) addr, (uintptr_t) &addr, (uintptr_t) pastPtr);
             //printf("remaining amount : %d, freep : %d bytes: %d\n", (cc->size), free_list, bytes);
 
             //check_list(used_list);
@@ -335,7 +343,6 @@ gc_malloc1(size_t bytes)
     return 0;
 }
 
-static long lastAddr = 0;
 
 void*
 gc_malloc(size_t bytes)
@@ -344,7 +351,6 @@ gc_malloc(size_t bytes)
 
     addr = gc_malloc1(bytes);
     if (addr) {
-        lastAddr = (intptr_t) addr;
         return addr;
     }
 
@@ -365,6 +371,25 @@ gc_malloc(size_t bytes)
     abort();
 }
 
+static void isValidCellPointer(intptr_t bot, intptr_t top, intptr_t testPtr) {
+    intptr_t stackDeRef = *(intptr_t *)testPtr;
+    intptr_t chunk_bot = (intptr_t)chunk_base;
+    intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
+
+    cell *actualCell = (cell*) ((void*) stackDeRef - sizeof(cell));
+
+//      if(0 == 0) {
+    if(actualCell >= chunk_bot && actualCell <= chunk_top){
+        //printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- heapdata: %ld, pastPtr; %ld\n", count, lastAddr, index, ii, *(long *  )ii , pastPtr);
+        if(actualCell && actualCell->conf == (actualCell->size * 7)) {
+            printf("actualAddr: null size: %d used: %d conf: %d\n", actualCell->size, actualCell->used, actualCell->conf);
+            actualCell->mark = 1;
+        }
+        intptr_t actualCellData = (void *) actualCell + sizeof(cell);
+        printf("actualCell: %ld actualCellData: %ld\n", (intptr_t) actualCell, actualCellData);
+    }
+}
+
 static
 void
 mark_range(intptr_t bot, intptr_t top)
@@ -372,21 +397,34 @@ mark_range(intptr_t bot, intptr_t top)
     intptr_t chunk_bot = (intptr_t)chunk_base;
     intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
 
+   // chunk_top += CHUNK_SIZE;
+
     //chunk_bot = (void *) chunk_top + chunk_bot;
 
     long count = stack_top - bot;
     long index = 0;
-    for (intptr_t ii = bot; ii < stack_top; ii++) {
+    //printf("stack_top: %ld, stack_bottom: %ld, heap_bottom: %ld, heap_top: %ld", top, bot, chunk_bot, chunk_top);
+
+    for (intptr_t ii = bot; ii <= top; ii++) {
         index++;
-        intptr_t heapAddr = (intptr_t) *(intptr_t *) ii;
-        if(heapAddr > chunk_bot && heapAddr < chunk_top) {
-            printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- stack_top: %ld\n", count, lastAddr, index, ii, *(long *  )ii );
-            intptr_t actualAddr = lastAddr - sizeof(cell);
-            cell *actualCell = (cell *) actualAddr;
-            if(actualCell && actualCell->conf == (actualCell->size * 7)) {
-                printf("actualAddr: %ld size: %d used: %d conf: %d\n", actualAddr, actualCell->size, actualCell->used, actualCell->conf);
+        //cell actualAddr = (intptr_t) (* (long* ) ii) - sizeof(cell);
+//        isValidCellPointer(bot, top, ii);
+        //printf("Trying to deref %ld\n", ii);
+        intptr_t stackDeRef = *(intptr_t *)ii;
+
+        cell *actualCell = (cell*) ((void*) stackDeRef - sizeof(cell));
+
+//      if(0 == 0) {
+        if(actualCell >= chunk_bot && actualCell <= chunk_top) {
+            //printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- heapdata: %ld, pastPtr; %ld\n", count, lastAddr, index, ii, *(long *  )ii , pastPtr);
+            if(actualCell && actualCell->conf == (actualCell->size * 7) && actualCell->mark == 0) {
+                //printf("size: %d used: %d conf: %d\n", actualCell->size, actualCell->used, actualCell->conf);
                 actualCell->mark = 1;
+                mark_range((void *) actualCell + sizeof(cell), (void *) actualCell + (actualCell->size * ALLOC_UNIT));       
             }
+        } 
+        if(index >  count) {
+           // printf("breaking here\n");
         }
     }
 
@@ -404,6 +442,8 @@ mark()
 {
     intptr_t stack_bot = 0;
     intptr_t bot = (intptr_t) &stack_bot;
+/**    intptr_t pages = bot / 4096 + 1;
+    bot = pages * 4096; */
     mark_range(bot, stack_top);
 }
 
@@ -418,6 +458,10 @@ sweep()
 
     for(prevIndex = 0, currIndex = used_list;  currIndex > 0 ; prevIndex = currIndex, currIndex = curCell->next) {
         curCell = o2p(currIndex);
+        if(curCell && curCell->mark == 0) {
+            printf("unmarked %ld\n", (uintptr_t) curCell);
+        }
+        /**
         if(curCell->mark == 1) {
             curCell->mark = 0;
         } else {
@@ -430,15 +474,13 @@ sweep()
             }
             insert_free(currIndex, curCell);
         }
+        */
     }
 }
 
 void
 gc_collect()
 {
-    if(0 == 0) {
-        return;
-    }
     mark();
     sweep();
 }
