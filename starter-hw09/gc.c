@@ -147,6 +147,9 @@ insert_free(u16 coff, cell* item)
     
     u16 index, prevIndex = 0;
 
+    blocks_freed += 1;
+    bytes_freed += item->size * ALLOC_UNIT;
+
     if(free_list == 0) {
         free_list = p2o(item);
         item->next = 0;
@@ -159,6 +162,8 @@ insert_free(u16 coff, cell* item)
         curCellAddrSt = 0;
         curCellAddrEnd = 0;
         curCell = 0;
+        if(count > 1000)
+            break;
 
         if(index > 0) {
             curCell = o2p(index);
@@ -331,7 +336,7 @@ gc_malloc1(size_t bytes)
 
             assert(dd->size == units);
             assert(dd->conf == 7*dd->size);
-            //printf("Allocated cell* : %ld, Adress: %ld,  pointer to this cell: %ld\n", (intptr_t) dd, (intptr_t) addr, (intptr_t) &dd);
+            //printf("Allocated cell* : %ld, Ch_Address: %ld,  pointer to cell: %ld\n", (intptr_t) dd, (intptr_t) addr, (intptr_t) &dd);
             //printf("AllocatedChar: %ld, allocchar_addr: %ld ,pastPtr: %ld\n\n", (uintptr_t) addr, (uintptr_t) &addr, (uintptr_t) pastPtr);
             //printf("remaining amount : %d, freep : %d bytes: %d\n", (cc->size), free_list, bytes);
 
@@ -371,25 +376,6 @@ gc_malloc(size_t bytes)
     abort();
 }
 
-static void isValidCellPointer(intptr_t bot, intptr_t top, intptr_t testPtr) {
-    intptr_t stackDeRef = *(intptr_t *)testPtr;
-    intptr_t chunk_bot = (intptr_t)chunk_base;
-    intptr_t chunk_top = chunk_bot + CHUNK_SIZE;
-
-    cell *actualCell = (cell*) ((void*) stackDeRef - sizeof(cell));
-
-//      if(0 == 0) {
-    if(actualCell >= chunk_bot && actualCell <= chunk_top){
-        //printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- heapdata: %ld, pastPtr; %ld\n", count, lastAddr, index, ii, *(long *  )ii , pastPtr);
-        if(actualCell && actualCell->conf == (actualCell->size * 7)) {
-            printf("actualAddr: null size: %d used: %d conf: %d\n", actualCell->size, actualCell->used, actualCell->conf);
-            actualCell->mark = 1;
-        }
-        intptr_t actualCellData = (void *) actualCell + sizeof(cell);
-        printf("actualCell: %ld actualCellData: %ld\n", (intptr_t) actualCell, actualCellData);
-    }
-}
-
 static
 void
 mark_range(intptr_t bot, intptr_t top)
@@ -415,12 +401,12 @@ mark_range(intptr_t bot, intptr_t top)
         cell *actualCell = (cell*) ((void*) stackDeRef - sizeof(cell));
 
 //      if(0 == 0) {
-        if(actualCell >= chunk_bot && actualCell <= chunk_top) {
+        if((intptr_t) actualCell >= chunk_bot && (intptr_t) actualCell <= chunk_top) {
             //printf("count: %ld lastAddr: %ld index: %ld ii: %ld  -- heapdata: %ld, pastPtr; %ld\n", count, lastAddr, index, ii, *(long *  )ii , pastPtr);
             if(actualCell && actualCell->conf == (actualCell->size * 7) && actualCell->mark == 0) {
                 //printf("size: %d used: %d conf: %d\n", actualCell->size, actualCell->used, actualCell->conf);
                 actualCell->mark = 1;
-                mark_range((void *) actualCell + sizeof(cell), (void *) actualCell + (actualCell->size * ALLOC_UNIT));       
+                mark_range((intptr_t)((void *) actualCell + sizeof(cell)), (intptr_t)((void *) actualCell + (actualCell->size * ALLOC_UNIT)));       
             }
         } 
         if(index >  count) {
@@ -456,25 +442,31 @@ sweep()
     cell *curCell, *prevCell;
     u16 currIndex = 0, prevIndex = 0;
 
-    for(prevIndex = 0, currIndex = used_list;  currIndex > 0 ; prevIndex = currIndex, currIndex = curCell->next) {
+    for(prevIndex = 0, currIndex = used_list;  currIndex > 0 ; ) {
         curCell = o2p(currIndex);
         if(curCell && curCell->mark == 0) {
-            printf("unmarked %ld\n", (uintptr_t) curCell);
+            //printf("unmarked %ld\n", (uintptr_t) curCell);
         }
-        /**
+        
+        
         if(curCell->mark == 1) {
             curCell->mark = 0;
+            prevIndex = currIndex;
+            currIndex = curCell->next;
         } else {
+            int newCurIndex = curCell->next;
             curCell->used = 0;
             if(prevIndex == 0)
-                used_list = 0;
+                used_list = curCell->next;
             else {
                 prevCell = o2p(prevIndex);
                 prevCell->next = curCell->next;
             }
             insert_free(currIndex, curCell);
+            currIndex = newCurIndex;
         }
-        */
+        
+        
     }
 }
 
