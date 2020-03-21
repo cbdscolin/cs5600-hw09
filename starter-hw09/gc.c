@@ -419,6 +419,7 @@ mark()
 {
     intptr_t stack_bot = 0;
     intptr_t bot = (intptr_t) &stack_bot;
+    stack_top = stack_top - 16;
     mark_range(bot, stack_top);
 }
 
